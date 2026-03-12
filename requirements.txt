@@ -1,0 +1,4 @@
+streamlit
+requests
+pandas
+openpyxl==3.1.2
