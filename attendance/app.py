@@ -221,133 +221,6 @@ def get_tenant_access_token():
         st.error(f"网络请求异常: {e}")
         st.stop()
 
-def fetch_daily_stats(date, user_ids):
-    token = get_tenant_access_token()
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json; charset=utf-8"
-    }
-    params = {"employee_type": EMPLOYEE_TYPE}
-    payload = {
-        "locale": "zh",
-        "stats_type": "daily",
-        "start_date": int(date),
-        "end_date": int(date),
-        "user_ids": user_ids,
-        "need_history": True,
-        "current_group_only": False,
-        "user_id": USER_ID
-    }
-    try:
-        response = requests.post(STATS_URL, headers=headers, params=params, json=payload, timeout=30)
-        response.raise_for_status()
-        result = response.json()
-        if result.get("code") == 0:
-            return result.get("data", {})
-        else:
-            st.warning(f"获取 {date} 数据失败: {result.get('msg')}")
-            return None
-    except requests.exceptions.RequestException as e:
-        st.warning(f"网络请求异常: {e}")
-        return None
-
-def extract_value(datas, code, default="-"):
-    for item in datas:
-        if item.get("code") == code:
-            return item.get("value", default)
-    return default
-
-def extract_duration_hour(datas, code):
-    for item in datas:
-        if item.get("code") == code:
-            duration = item.get("duration_num", {})
-            if duration:
-                return float(duration.get("hour", 0))
-    return 0.0
-
-def extract_punch_time_and_status(datas, punch_sequence):
-    time_code = f"51502-{punch_sequence}"
-    result_code = f"51503-{punch_sequence}"
-    punch_time = extract_value(datas, time_code, "-")
-    punch_status = "-"
-    for item in datas:
-        if item.get("code") == result_code:
-            features = item.get("features", [])
-            for feature in features:
-                if feature.get("key") == "StatusMsg":
-                    punch_status = feature.get("value", "-")
-                    break
-            break
-    return punch_time, punch_status
-
-def calculate_overtime(actual_shift_end):
-    if not actual_shift_end or actual_shift_end == "-":
-        return 0.0
-    try:
-        end_time = datetime.strptime(actual_shift_end, "%H:%M")
-        expected_end = datetime.strptime(EXPECTED_SHIFT_END_TIME, "%H:%M")
-        if end_time > expected_end:
-            diff = end_time - expected_end
-            minutes = int(diff.total_seconds() / 60)
-            return round(minutes / 60, 2)
-        else:
-            return 0.0
-    except ValueError:
-        return 0.0
-
-def parse_daily_data(api_data):
-    records = []
-    user_datas = api_data.get("user_datas", [])
-    for user_data in user_datas:
-        datas = user_data.get("datas", [])
-        name = user_data.get("name", "")
-        user_id = user_data.get("user_id", "")
-        dept = extract_value(datas, "50102")
-        emp_no = extract_value(datas, "50103")
-        date = extract_value(datas, "51201")
-        shift = extract_value(datas, "51202")
-        group = extract_value(datas, "51203")
-        scheduled_hours = extract_duration_hour(datas, "51302")
-        actual_hours_api = extract_duration_hour(datas, "51303")
-        leave_hours = extract_duration_hour(datas, "51401")
-        intra_shift_hours = round(scheduled_hours - leave_hours, 2)
-
-        on_time, on_status = extract_punch_time_and_status(datas, "1-1")
-        off_time, off_status = extract_punch_time_and_status(datas, "1-2")
-        overtime_hours = 0.0
-        if off_status == "正常" and off_time != "-":
-            overtime_hours = calculate_overtime(off_time)
-
-        if date != "-":
-            try:
-                formatted_date = datetime.strptime(date, DATE_FORMAT).strftime(OUTPUT_DATE_FORMAT)
-            except ValueError:
-                formatted_date = date
-        else:
-            formatted_date = date
-
-        record = {
-            "姓名": name,
-            "工号": emp_no,
-            "部门": dept,
-            "日期": formatted_date,
-            "班次": shift,
-            "上班打卡": on_time,
-            "下班打卡": off_time,
-            "应出勤(小时)": scheduled_hours,
-            "实际出勤(小时)": actual_hours_api,
-            "加班时长(小时)": overtime_hours,
-            "请假时长": leave_hours if leave_hours > 0 else "-",
-            "班内工作时长(小时)": intra_shift_hours,
-            "上午打卡结果": on_status,
-            "下午打卡结果": off_status,
-            "考勤组": group,
-            "_原始日期": date,
-            "用户ID": user_id
-        }
-        records.append(record)
-    return records
-
 
 def fetch_daily_stats(date, user_ids):
     """返回 (api_data, error_message)，如果成功 error_message 为 None"""
@@ -412,6 +285,7 @@ def extract_punch_time_and_status(datas, punch_sequence):
 
 
 def calculate_overtime(actual_shift_end):
+    """工作日加班计算（基于17:30）"""
     if not actual_shift_end or actual_shift_end == "-":
         return 0.0
     try:
@@ -425,6 +299,64 @@ def calculate_overtime(actual_shift_end):
             return 0.0
     except ValueError:
         return 0.0
+
+
+def calculate_non_workday_overtime(on_time_str, off_time_str):
+    """非工作日加班计算：下班-上班，扣除午休11:45-13:00的重叠部分"""
+    if on_time_str == "-" or off_time_str == "-":
+        return 0.0
+    try:
+        # 使用一个基准日期将时间字符串转为datetime对象以便计算
+        base_date = datetime(1900, 1, 1)
+        on_time = datetime.strptime(on_time_str, "%H:%M").replace(year=base_date.year, month=base_date.month, day=base_date.day)
+        off_time = datetime.strptime(off_time_str, "%H:%M").replace(year=base_date.year, month=base_date.month, day=base_date.day)
+
+        # 如果下班时间早于上班时间（跨天），则下班时间加一天
+        if off_time < on_time:
+            off_time += timedelta(days=1)
+
+        total_seconds = (off_time - on_time).total_seconds()
+        total_hours = total_seconds / 3600
+
+        # 午休时段
+        lunch_start = base_date.replace(hour=11, minute=45)
+        lunch_end = base_date.replace(hour=13, minute=0)
+
+        # 计算重叠分钟数
+        overlap_start = max(on_time, lunch_start)
+        overlap_end = min(off_time, lunch_end)
+        overlap_minutes = 0
+        if overlap_start < overlap_end:
+            overlap_minutes = (overlap_end - overlap_start).total_seconds() / 60
+
+        # 扣除午休
+        valid_hours = total_hours - overlap_minutes / 60
+        return round(max(valid_hours, 0), 2)
+    except Exception:
+        return 0.0
+
+
+def is_workday(date_str):
+    """判断给定日期（YYYY-MM-DD）是否为工作日"""
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        year = dt.year
+        weekday = dt.weekday()
+        year_config = HOLIDAYS_BY_YEAR.get(year, {"holidays": [], "workweekends": []})
+        holidays_set = set(year_config["holidays"])
+        workweekends_set = set(year_config["workweekends"])
+
+        if date_str in workweekends_set:
+            return True   # 调休上班日
+        if date_str in holidays_set:
+            return False  # 法定节假日
+        if weekday < 5:
+            return True   # 周一至周五
+        else:
+            return False  # 常规周末
+    except:
+        # 如果日期无法解析，默认按工作日处理
+        return True
 
 
 def parse_daily_data(api_data):
@@ -446,9 +378,6 @@ def parse_daily_data(api_data):
 
         on_time, on_status = extract_punch_time_and_status(datas, "1-1")
         off_time, off_status = extract_punch_time_and_status(datas, "1-2")
-        overtime_hours = 0.0
-        if off_status == "正常" and off_time != "-":
-            overtime_hours = calculate_overtime(off_time)
 
         if date != "-":
             try:
@@ -457,6 +386,16 @@ def parse_daily_data(api_data):
                 formatted_date = date
         else:
             formatted_date = date
+
+        # 判断是否为工作日
+        workday_flag = is_workday(formatted_date)
+
+        if workday_flag:
+            # 工作日加班：基于期望下班时间17:30
+            overtime_hours = calculate_overtime(off_time) if off_status == "正常" and off_time != "-" else 0.0
+        else:
+            # 非工作日加班：总时长扣除午休
+            overtime_hours = calculate_non_workday_overtime(on_time, off_time)
 
         record = {
             "姓名": name,
@@ -520,12 +459,11 @@ def fetch_all_records(start_date_str, end_date_str, user_ids):
 
 
 def generate_daily_report(all_records):
-    """生成日统计报表"""
+    """生成日统计报表，将用户ID列移至最后"""
     daily_report = []
     for record in all_records:
         daily_report.append({
             "用户名称": record["姓名"],
-            "用户ID": record["用户ID"],
             "部门": record["部门"],
             "所属中心": record.get("所属中心", ""),
             "日期": record["日期"],
@@ -535,7 +473,8 @@ def generate_daily_report(all_records):
             "上班打卡时间": record["上班打卡"],
             "下班打卡时间": record["下班打卡"],
             "加班时间(小时)": record["加班时长(小时)"],
-            "请假时长(小时)": record["请假时长"] if record["请假时长"] != "-" else 0.0
+            "请假时长(小时)": record["请假时长"] if record["请假时长"] != "-" else 0.0,
+            "用户ID": record["用户ID"]  # 用户ID放在最后
         })
     daily_report.sort(key=lambda x: (
         x["部门"],
@@ -546,7 +485,7 @@ def generate_daily_report(all_records):
 
 
 def generate_monthly_report(all_records, month):
-    """生成月统计报表"""
+    """生成月统计报表，将用户ID列移至最后"""
     user_stats = defaultdict(lambda: {
         "总应出勤": 0.0,
         "总实际出勤_api": 0.0,
@@ -579,7 +518,6 @@ def generate_monthly_report(all_records, month):
     for user_id, stats in user_stats.items():
         monthly_report.append({
             "用户名称": stats["姓名"],
-            "用户ID": user_id,
             "部门": stats["部门"],
             "所属中心": stats["所属中心"],
             "月份": month,
@@ -587,7 +525,8 @@ def generate_monthly_report(all_records, month):
             "总实际出勤(小时)": round(stats["总实际出勤_api"], 2),
             "总班内工作时长(小时)": round(stats["总班内"], 2),
             "总加班时间(小时)": round(stats["总加班"], 2),
-            "总请假时长(小时)": round(stats["总请假"], 2)
+            "总请假时长(小时)": round(stats["总请假"], 2),
+            "用户ID": user_id  # 用户ID放在最后
         })
     monthly_report.sort(key=lambda x: (x["部门"], -x["总加班时间(小时)"]))
     return monthly_report
@@ -770,12 +709,22 @@ st.markdown("""
         gap: 1rem;
     }
 
-    /* 表格样式 */
+    /* ========== 表格样式（固定前三列 - 优化版） ========== */
     .stDataFrame {
         font-size: 13px;
         border-radius: 8px;
         overflow: hidden;
         box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    }
+    .stDataFrame > div {
+        overflow-x: auto !important;
+        white-space: nowrap;
+        max-width: 100%;
+    }
+    .stDataFrame table {
+        border-collapse: collapse;
+        width: max-content;
+        min-width: 100%;
     }
     .stDataFrame thead tr th {
         background-color: var(--table-header-bg) !important;
@@ -784,11 +733,43 @@ st.markdown("""
         padding: 12px 8px !important;
         white-space: nowrap;
         color: var(--text-primary);
+        position: sticky;
+        top: 0;
+        z-index: 20;
     }
-    .stDataFrame tbody tr:nth-child(odd) {
+    /* 固定前三列 */
+    .stDataFrame th:nth-child(1),
+    .stDataFrame td:nth-child(1) {
+        position: sticky !important;
+        left: 0 !important;
+        z-index: 30 !important;
+        background-color: inherit !important;
+    }
+    .stDataFrame th:nth-child(2),
+    .stDataFrame td:nth-child(2) {
+        position: sticky !important;
+        left: 80px !important;  /* 序号列宽80px */
+        z-index: 30 !important;
+        background-color: inherit !important;
+    }
+    .stDataFrame th:nth-child(3),
+    .stDataFrame td:nth-child(3) {
+        position: sticky !important;
+        left: 230px !important; /* 序号80px + 用户名称150px = 230px */
+        z-index: 30 !important;
+        background-color: inherit !important;
+    }
+    /* 表头背景色统一覆盖 */
+    .stDataFrame th:nth-child(1),
+    .stDataFrame th:nth-child(2),
+    .stDataFrame th:nth-child(3) {
+        background-color: var(--table-header-bg) !important;
+    }
+    /* 奇数行背景色 */
+    .stDataFrame tbody tr:nth-child(odd) td {
         background-color: var(--table-row-odd);
     }
-    .stDataFrame tbody tr:hover {
+    .stDataFrame tbody tr:hover td {
         background-color: var(--table-row-hover) !important;
         transition: background-color 0.15s;
     }
@@ -805,7 +786,7 @@ st.markdown("""
         font-family: 'Courier New', monospace;
     }
 
-    /* 分页按钮 */
+    /* ========== 分页按钮 ========== */
     div[data-testid="stHorizontalBlock"] > div {
         display: flex;
         align-items: center;
@@ -846,10 +827,6 @@ st.markdown("""
     div.sort-buttons .stRadio label span:first-child {
         transform: scale(0.6) !important;
         margin-right: 2px !important;
-    }
-    /* 移除可能的按钮样式残留 */
-    div.sort-buttons .stButton {
-        display: none;
     }
 
     /* 部门多选框禁用样式 */
@@ -896,8 +873,6 @@ st.markdown("""
         margin-top: 0.5rem !important;
         margin-bottom: 0 !important;
     }
-
-
 </style>
 """, unsafe_allow_html=True)
 
@@ -934,30 +909,22 @@ if "page_detail" not in st.session_state:
 if "page_size_detail" not in st.session_state:
     st.session_state.page_size_detail = 10
 
-# 排序状态初始化（默认加班倒序）
+# 月报表排序状态初始化（默认加班倒序）
 if "sort_monthly" not in st.session_state:
     st.session_state.sort_monthly = "加班倒序"
-if "sort_daily" not in st.session_state:
-    st.session_state.sort_daily = "加班倒序"
-if "sort_detail" not in st.session_state:
-    st.session_state.sort_detail = "加班倒序"
-
 
 # 快捷日期辅助函数
 def get_today():
     return datetime.now().date()
 
-
 def get_first_day_of_month(d):
     return d.replace(day=1)
-
 
 def get_first_day_of_last_month():
     today = get_today()
     first_this = today.replace(day=1)
     last_month_last_day = first_this - timedelta(days=1)
     return last_month_last_day.replace(day=1)
-
 
 def get_last_day_of_last_month():
     today = get_today()
@@ -1054,8 +1021,7 @@ with st.sidebar:
                 else:
                     name_col = None
                 if name_col:
-                    df_filtered = df_filtered[
-                        df_filtered[name_col].astype(str).str.contains(name_query, case=False, na=False)]
+                    df_filtered = df_filtered[df_filtered[name_col].astype(str).str.contains(name_query, case=False, na=False)]
             person_count = len(df_filtered)
         else:
             person_count = 0
@@ -1156,7 +1122,6 @@ if st.session_state.data_loaded:
             centers = sorted(addr_df["所属中心"].unique())
             center_options = ["全部中心"] + centers
 
-
             def reset_dept_filter():
                 center = st.session_state.center_filter
                 if center == "全部中心":
@@ -1164,7 +1129,6 @@ if st.session_state.data_loaded:
                 else:
                     dept_opts = sorted(addr_df[addr_df["所属中心"] == center]["部门"].unique())
                     st.session_state.dept_filter = dept_opts
-
 
             selected_center = st.selectbox(
                 "🏢 选择所属中心",
@@ -1202,7 +1166,6 @@ if st.session_state.data_loaded:
     current_depts = selected_depts
     name_query = st.session_state.get("name_filter", "").strip()
 
-
     # 过滤函数（支持多部门匹配 + 姓名模糊）
     def filter_df(df, center_col="所属中心", dept_col="部门"):
         filtered = df.copy()
@@ -1223,7 +1186,6 @@ if st.session_state.data_loaded:
             if name_col:
                 filtered = filtered[filtered[name_col].astype(str).str.contains(name_query, case=False, na=False)]
         return filtered
-
 
     # 计算工作日（用于指标卡片）
     workdays = count_workdays(st.session_state.start_date, st.session_state.end_date)
@@ -1262,7 +1224,6 @@ if st.session_state.data_loaded:
         show_selected_center = False
         avg_selected = daily_avg_selected = None
 
-
     # 指标卡片生成函数
     def metric_card(label, value, unit="小时", color=None, warning=False, blue=False):
         color_class = "metric-value-red" if color == "red" else ("metric-value-blue" if blue else "")
@@ -1275,7 +1236,6 @@ if st.session_state.data_loaded:
         </div>
         """
 
-
     # TOP3卡片函数
     def top3_card(top3_data):
         top3_html = '<div class="metric-card" style="height: 100%; display: flex; flex-direction: column; justify-content: center;"><div class="metric-label" style="margin-bottom: 16px; font-size: 18px;">🐝 小蜜蜂TOP3</div>'
@@ -1287,7 +1247,6 @@ if st.session_state.data_loaded:
             top3_html += '<div style="color: var(--text-secondary); font-size: 16px;">暂无数据</div>'
         top3_html += '</div>'
         return top3_html
-
 
     # 确定列数及比例
     if show_selected_center:
@@ -1325,7 +1284,7 @@ if st.session_state.data_loaded:
     # 标签页
     tab1, tab2, tab3 = st.tabs(["📅 月报表", "📆 日报表", "📋 明细数据"])
 
-    # ---------- 月报表 ----------
+    # ---------- 月报表（保留排序功能） ----------
     with tab1:
         # 排序 radio
         st.markdown('<div class="sort-buttons">', unsafe_allow_html=True)
@@ -1357,7 +1316,6 @@ if st.session_state.data_loaded:
         column_config = {
             "序号": st.column_config.NumberColumn(width=80),
             "用户名称": st.column_config.TextColumn(width=150),
-            "用户ID": st.column_config.TextColumn(width=100),
             "部门": st.column_config.TextColumn(width=150),
             "所属中心": st.column_config.TextColumn(width=150),
             "月份": st.column_config.TextColumn(width=80),
@@ -1366,6 +1324,7 @@ if st.session_state.data_loaded:
             "总班内工作时长(小时)": st.column_config.NumberColumn(width=100, format="%.2f"),
             "总加班时间(小时)": st.column_config.NumberColumn(width=100, format="%.2f"),
             "总请假时长(小时)": st.column_config.NumberColumn(width=100, format="%.2f"),
+            "用户ID": st.column_config.TextColumn(width=100)  # 用户ID放在最后
         }
         st.dataframe(df_page, column_config=column_config, use_container_width=True, hide_index=True)
 
@@ -1418,25 +1377,10 @@ if st.session_state.data_loaded:
                     st.session_state.page_monthly = total_pages
                     st.rerun()
 
-    # ---------- 日报表 ----------
+    # ---------- 日报表（固定排序：部门正序-姓名正序-日期倒序） ----------
     with tab2:
-        # 排序 radio
-        st.markdown('<div class="sort-buttons">', unsafe_allow_html=True)
-        st.radio(
-            "排序",
-            options=["加班倒序", "请假倒序"],
-            horizontal=True,
-            key="sort_daily",
-            label_visibility="collapsed"
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
-
+        # 直接使用已按部门-姓名-日期倒序排序的 df_daily
         df_display = df_daily.copy()
-        if st.session_state.sort_daily == "加班倒序":
-            df_display = df_display.sort_values(by="加班时间(小时)", ascending=False)
-        else:
-            df_display = df_display.sort_values(by="请假时长(小时)", ascending=False)
-
         if not df_display.empty:
             df_display.insert(0, '序号', range(1, len(df_display) + 1))
 
@@ -1448,7 +1392,6 @@ if st.session_state.data_loaded:
         column_config = {
             "序号": st.column_config.NumberColumn(width=80),
             "用户名称": st.column_config.TextColumn(width=150),
-            "用户ID": st.column_config.TextColumn(width=100),
             "部门": st.column_config.TextColumn(width=150),
             "所属中心": st.column_config.TextColumn(width=150),
             "日期": st.column_config.TextColumn(width=100),
@@ -1457,6 +1400,7 @@ if st.session_state.data_loaded:
             "班内工作时长(小时)": st.column_config.NumberColumn(width=100, format="%.2f"),
             "加班时间(小时)": st.column_config.NumberColumn(width=100, format="%.2f"),
             "请假时长(小时)": st.column_config.NumberColumn(width=100, format="%.2f"),
+            "用户ID": st.column_config.TextColumn(width=100)  # 用户ID放在最后
         }
         st.dataframe(df_page, column_config=column_config, use_container_width=True, hide_index=True)
 
@@ -1508,28 +1452,13 @@ if st.session_state.data_loaded:
                     st.session_state.page_daily = total_pages
                     st.rerun()
 
-    # ---------- 明细数据 ----------
+    # ---------- 明细数据（固定排序：部门正序-姓名正序-日期倒序） ----------
     with tab3:
-        # 排序 radio
-        st.markdown('<div class="sort-buttons">', unsafe_allow_html=True)
-        st.radio(
-            "排序",
-            options=["加班倒序", "请假倒序"],
-            horizontal=True,
-            key="sort_detail",
-            label_visibility="collapsed"
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
-
         df_display = df_detail.copy()
-        # 将“请假时长”列中的字符串转换为数值
+        # 将“请假时长”列中的字符串转换为数值（不影响排序，仅用于显示）
         df_display['请假时长'] = pd.to_numeric(df_display['请假时长'], errors='coerce').fillna(0)
 
-        if st.session_state.sort_detail == "加班倒序":
-            df_display = df_display.sort_values(by="加班时长(小时)", ascending=False)
-        else:
-            df_display = df_display.sort_values(by="请假时长", ascending=False)
-
+        # 明细数据已按部门-姓名-日期倒序排序，直接使用
         if not df_display.empty:
             df_display.insert(0, '序号', range(1, len(df_display) + 1))
 
@@ -1541,8 +1470,8 @@ if st.session_state.data_loaded:
         column_config = {
             "序号": st.column_config.NumberColumn(width=80),
             "姓名": st.column_config.TextColumn(width=120),
-            "工号": st.column_config.TextColumn(width=100),
             "部门": st.column_config.TextColumn(width=150),
+            "工号": st.column_config.TextColumn(width=100),
             "日期": st.column_config.TextColumn(width=100),
             "班次": st.column_config.TextColumn(width=100),
             "上班打卡": st.column_config.TextColumn(width=100),
@@ -1555,7 +1484,7 @@ if st.session_state.data_loaded:
             "上午打卡结果": st.column_config.TextColumn(width=100),
             "下午打卡结果": st.column_config.TextColumn(width=100),
             "考勤组": st.column_config.TextColumn(width=120),
-            "用户ID": st.column_config.TextColumn(width=100),
+            "用户ID": st.column_config.TextColumn(width=100)  # 用户ID已在最后
         }
         st.dataframe(df_page, column_config=column_config, use_container_width=True, hide_index=True)
 
