@@ -87,7 +87,8 @@ DEFAULT_ADDRESS_BOOK = [
     {"用户ID": "10010139", "部门": "南京研究中心", "所属中心": "南京研究中心"},
     {"用户ID": "10010140", "部门": "南京研究中心", "所属中心": "南京研究中心"},
     {"用户ID": "10010145", "部门": "南京研究中心", "所属中心": "南京研究中心"},
-    {"用户ID": "10010123", "部门": "清华无锡院智能配电应用技术研究中心", "所属中心": "清华无锡院智能配电应用技术研究中心"},
+    {"用户ID": "10010123", "部门": "清华无锡院智能配电应用技术研究中心",
+     "所属中心": "清华无锡院智能配电应用技术研究中心"},
     {"用户ID": "10010002", "部门": "营销中心", "所属中心": "营销中心"},
     {"用户ID": "10010003", "部门": "营销中心", "所属中心": "营销中心"},
     {"用户ID": "10010029", "部门": "商务部", "所属中心": "营销中心"},
@@ -198,6 +199,8 @@ HOLIDAYS_BY_YEAR = {
         "workweekends": []
     }
 }
+
+
 # ==================== 飞书API相关函数 ====================
 def get_tenant_access_token():
     global _token, _token_expire_time
@@ -397,11 +400,15 @@ def parse_daily_data(api_data):
             # 非工作日加班：总时长扣除午休
             overtime_hours = calculate_non_workday_overtime(on_time, off_time)
 
+        # 提取月份（YYYY-MM）
+        month = formatted_date[:7] if formatted_date != "-" else ""
+
         record = {
             "姓名": name,
             "工号": emp_no,
             "部门": dept,
             "日期": formatted_date,
+            "月份": month,
             "班次": shift,
             "上班打卡": on_time,
             "下班打卡": off_time,
@@ -458,10 +465,10 @@ def fetch_all_records(start_date_str, end_date_str, user_ids):
     return all_records
 
 
-def generate_daily_report(all_records):
+def generate_daily_report(records):
     """生成日统计报表，将用户ID列移至最后"""
     daily_report = []
-    for record in all_records:
+    for record in records:
         daily_report.append({
             "用户名称": record["姓名"],
             "部门": record["部门"],
@@ -474,7 +481,7 @@ def generate_daily_report(all_records):
             "下班打卡时间": record["下班打卡"],
             "加班时间(小时)": record["加班时长(小时)"],
             "请假时长(小时)": record["请假时长"] if record["请假时长"] != "-" else 0.0,
-            "用户ID": record["用户ID"]  # 用户ID放在最后
+            "用户ID": record["用户ID"]
         })
     daily_report.sort(key=lambda x: (
         x["部门"],
@@ -484,8 +491,8 @@ def generate_daily_report(all_records):
     return daily_report
 
 
-def generate_monthly_report(all_records, month):
-    """生成月统计报表，将用户ID列移至最后"""
+def generate_monthly_report_by_month(records, month):
+    """生成指定月份的月统计报表，将用户ID列移至最后"""
     user_stats = defaultdict(lambda: {
         "总应出勤": 0.0,
         "总实际出勤_api": 0.0,
@@ -496,7 +503,9 @@ def generate_monthly_report(all_records, month):
         "姓名": "",
         "所属中心": ""
     })
-    for record in all_records:
+    for record in records:
+        if record["月份"] != month:
+            continue
         user_id = record["用户ID"]
         name = record["姓名"]
         dept = record["部门"]
@@ -526,10 +535,57 @@ def generate_monthly_report(all_records, month):
             "总班内工作时长(小时)": round(stats["总班内"], 2),
             "总加班时间(小时)": round(stats["总加班"], 2),
             "总请假时长(小时)": round(stats["总请假"], 2),
-            "用户ID": user_id  # 用户ID放在最后
+            "用户ID": user_id
         })
     monthly_report.sort(key=lambda x: (x["部门"], -x["总加班时间(小时)"]))
     return monthly_report
+
+
+def generate_summary_report(records):
+    """生成整个周期的汇总报表，将用户ID列移至最后"""
+    user_stats = defaultdict(lambda: {
+        "总应出勤": 0.0,
+        "总实际出勤_api": 0.0,
+        "总班内": 0.0,
+        "总加班": 0.0,
+        "总请假": 0.0,
+        "部门": "",
+        "姓名": "",
+        "所属中心": ""
+    })
+    for record in records:
+        user_id = record["用户ID"]
+        name = record["姓名"]
+        dept = record["部门"]
+        center = record.get("所属中心", "")
+        user_stats[user_id]["姓名"] = name
+        user_stats[user_id]["部门"] = dept
+        user_stats[user_id]["所属中心"] = center
+        user_stats[user_id]["总应出勤"] += record["应出勤(小时)"]
+        user_stats[user_id]["总实际出勤_api"] += record["实际出勤(小时)"]
+        user_stats[user_id]["总班内"] += record["班内工作时长(小时)"]
+        user_stats[user_id]["总加班"] += record["加班时长(小时)"]
+        leave_val = record["请假时长"]
+        if leave_val != "-":
+            user_stats[user_id]["总请假"] += float(leave_val)
+        else:
+            user_stats[user_id]["总请假"] += 0.0
+
+    summary_report = []
+    for user_id, stats in user_stats.items():
+        summary_report.append({
+            "用户名称": stats["姓名"],
+            "部门": stats["部门"],
+            "所属中心": stats["所属中心"],
+            "总应出勤时长(小时)": round(stats["总应出勤"], 2),
+            "总实际出勤(小时)": round(stats["总实际出勤_api"], 2),
+            "总班内工作时长(小时)": round(stats["总班内"], 2),
+            "总加班时间(小时)": round(stats["总加班"], 2),
+            "总请假时长(小时)": round(stats["总请假"], 2),
+            "用户ID": user_id
+        })
+    summary_report.sort(key=lambda x: (x["部门"], -x["总加班时间(小时)"]))
+    return summary_report
 
 
 def parse_address_book(uploaded_file):
@@ -583,7 +639,7 @@ st.markdown("""
     /* ========== 全局变量 ========== */
     :root {
         --bg-primary: #ffffff;
-        --bg-card: #f8f9fa;  /* 卡片背景色改为浅灰色，与白色背景区分 */
+        --bg-card: #f8f9fa;
         --text-primary: #0A0A0A;
         --text-secondary: #6c757d;
         --border-light: #f0f2f6;
@@ -600,6 +656,7 @@ st.markdown("""
         --color-blue: #1E88E5;
         --color-red: #dc3545;
         --disabled-bg: #f1f3f5;
+        --filter-bg: #f8f9fa;
     }
 
     [data-theme="dark"] {
@@ -621,6 +678,7 @@ st.markdown("""
         --color-blue: #66b0ff;
         --color-red: #ff6b6b;
         --disabled-bg: #2d2d2d;
+        --filter-bg: #1e1e1e;
     }
 
     /* ========== 标题样式 ========== */
@@ -704,6 +762,16 @@ st.markdown("""
         margin-left: 4px;
     }
 
+    /* TOP3卡片内文字颜色（深色主题适配） */
+    .top3-name {
+        color: var(--text-primary);
+    }
+    .top3-value {
+        color: var(--color-blue);
+        font-weight: 600;
+        font-size: 16px;
+    }
+
     /* 卡片列间距 */
     div[data-testid="column"] {
         gap: 1rem;
@@ -731,7 +799,8 @@ st.markdown("""
         font-weight: 600 !important;
         border-bottom: 2px solid var(--border-table) !important;
         padding: 12px 8px !important;
-        white-space: nowrap;
+        white-space: normal !important;
+        word-break: break-word;
         color: var(--text-primary);
         position: sticky;
         top: 0;
@@ -748,14 +817,14 @@ st.markdown("""
     .stDataFrame th:nth-child(2),
     .stDataFrame td:nth-child(2) {
         position: sticky !important;
-        left: 80px !important;  /* 序号列宽80px */
+        left: 80px !important;
         z-index: 30 !important;
         background-color: inherit !important;
     }
     .stDataFrame th:nth-child(3),
     .stDataFrame td:nth-child(3) {
         position: sticky !important;
-        left: 230px !important; /* 序号80px + 用户名称150px = 230px */
+        left: 230px !important;
         z-index: 30 !important;
         background-color: inherit !important;
     }
@@ -811,22 +880,16 @@ st.markdown("""
         cursor: not-allowed;
     }
 
-    /* ========== 排序 radio 样式 ========== */
-    div.sort-buttons {
-        margin-bottom: 0.3rem;
+    /* ========== 排序下拉框字体变小 ========== */
+    .stSelectbox {
+        font-size: 13px !important;
     }
-    div.sort-buttons .stRadio > div {
-        gap: 0.2rem !important;
-        justify-content: flex-start !important;
+    .stSelectbox > div > div {
+        font-size: 13px !important;
     }
-    div.sort-buttons .stRadio label {
-        font-size: 0.7rem !important;
-        align-items: center !important;
-        margin-right: 0 !important;
-    }
-    div.sort-buttons .stRadio label span:first-child {
-        transform: scale(0.6) !important;
-        margin-right: 2px !important;
+    /* 标签页文字变大 */
+    .stTabs [data-baseweb="tab-list"] button {
+        font-size: 16px !important;
     }
 
     /* 部门多选框禁用样式 */
@@ -873,6 +936,14 @@ st.markdown("""
         margin-top: 0.5rem !important;
         margin-bottom: 0 !important;
     }
+    [data-testid="stHorizontalBlock"] .stSelectbox {
+        margin-top: 0 !important;
+        padding-top: 0 !important;
+    }
+    [data-testid="stHorizontalBlock"] .sort-buttons .stRadio {
+        margin-top: 0 !important;
+        padding-top: 0 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -881,6 +952,9 @@ st.title("📊 北斗考勤报表")
 # 初始化session_state
 if "address_book_df" not in st.session_state:
     df_default = pd.DataFrame(DEFAULT_ADDRESS_BOOK)
+    # 去除部门和中心字段的空格，避免后续比较问题
+    df_default["部门"] = df_default["部门"].astype(str).str.strip()
+    df_default["所属中心"] = df_default["所属中心"].astype(str).str.strip()
     st.session_state.address_book_df = df_default
     st.session_state.user_ids = df_default["用户ID"].unique().tolist()
 
@@ -888,14 +962,24 @@ if "raw_records" not in st.session_state:
     st.session_state.raw_records = None
 if "df_daily_raw" not in st.session_state:
     st.session_state.df_daily_raw = None
-if "df_monthly_raw" not in st.session_state:
-    st.session_state.df_monthly_raw = None
-if "df_detail_raw" not in st.session_state:
-    st.session_state.df_detail_raw = None
+if "df_daily_by_month" not in st.session_state:
+    st.session_state.df_daily_by_month = {}
+if "df_detail_by_month" not in st.session_state:
+    st.session_state.df_detail_by_month = {}
+if "df_summary_raw" not in st.session_state:
+    st.session_state.df_summary_raw = None
+if "monthly_data" not in st.session_state:
+    st.session_state.monthly_data = {}
+if "month_list" not in st.session_state:
+    st.session_state.month_list = []
 if "data_loaded" not in st.session_state:
     st.session_state.data_loaded = False
 if "auto_load_attempted" not in st.session_state:
     st.session_state.auto_load_attempted = False
+if "loading" not in st.session_state:
+    st.session_state.loading = False
+if "pending_reload" not in st.session_state:
+    st.session_state.pending_reload = False
 if "page_monthly" not in st.session_state:
     st.session_state.page_monthly = 1
 if "page_size_monthly" not in st.session_state:
@@ -908,10 +992,10 @@ if "page_detail" not in st.session_state:
     st.session_state.page_detail = 1
 if "page_size_detail" not in st.session_state:
     st.session_state.page_size_detail = 10
-
-# 月报表排序状态初始化（默认加班倒序）
-if "sort_monthly" not in st.session_state:
-    st.session_state.sort_monthly = "加班倒序"
+if "page_summary" not in st.session_state:
+    st.session_state.page_summary = 1
+if "page_size_summary" not in st.session_state:
+    st.session_state.page_size_summary = 10
 
 # 快捷日期辅助函数
 def get_today():
@@ -966,40 +1050,71 @@ with st.sidebar:
         if st.button("上月", use_container_width=True):
             st.session_state.start_date = get_first_day_of_last_month()
             st.session_state.end_date = get_last_day_of_last_month()
+            # 重置筛选条件
+            st.session_state.center_filter = "全部中心"
+            st.session_state.dept_filter = []
+            st.session_state.name_filter = ""
+            st.session_state.pending_reload = True
+            st.session_state.loading = True
             st.rerun()
     with col_b:
         if st.button("本月", use_container_width=True):
             today = get_today()
             st.session_state.start_date = today.replace(day=1)
             st.session_state.end_date = today
+            # 重置筛选条件
+            st.session_state.center_filter = "全部中心"
+            st.session_state.dept_filter = []
+            st.session_state.name_filter = ""
+            st.session_state.pending_reload = True
+            st.session_state.loading = True
             st.rerun()
     with col_c:
         if st.button("本年", use_container_width=True):
             today = get_today()
             st.session_state.start_date = today.replace(month=1, day=1)
             st.session_state.end_date = today
+            # 重置筛选条件
+            st.session_state.center_filter = "全部中心"
+            st.session_state.dept_filter = []
+            st.session_state.name_filter = ""
+            st.session_state.pending_reload = True
+            st.session_state.loading = True
             st.rerun()
 
     today = get_today()
     default_start = today.replace(day=1)
     default_end = today
 
-    start_date = st.date_input("开始日期",
-                               value=st.session_state.get("start_date", default_start),
-                               key="start_date")
-    end_date = st.date_input("结束日期",
-                             value=st.session_state.get("end_date", default_end),
-                             key="end_date")
+    start_date = st.date_input(
+        "开始日期",
+        value=st.session_state.get("start_date", default_start),
+        key="start_date",
+        format="YYYY/MM/DD"
+    )
+    end_date = st.date_input(
+        "结束日期",
+        value=st.session_state.get("end_date", default_end),
+        key="end_date",
+        format="YYYY/MM/DD"
+    )
 
-    fetch_btn = st.button("获取数据", type="primary", use_container_width=True)
+    fetch_btn = st.button(
+        "获取数据",
+        type="primary",
+        use_container_width=True,
+        disabled=st.session_state.get("loading", False)
+    )
 
-    # ===== 统计周期和筛选人数卡片（动态计算） =====
+    # 显示加载状态提示（位于按钮下方）
+    if st.session_state.get("loading", False):
+        st.info("⏳ 数据加载中，请稍候...")
+
+    # ===== 统计周期和筛选人数卡片（基于总报表去重） =====
     if st.session_state.data_loaded:
-        # 使用侧边栏中的 start_date 和 end_date 计算工作日
         workdays_sidebar = count_workdays(start_date, end_date)
-        df_month_raw = st.session_state.df_monthly_raw
-        if df_month_raw is not None and not df_month_raw.empty:
-            df_filtered = df_month_raw.copy()
+        if st.session_state.df_summary_raw is not None and not st.session_state.df_summary_raw.empty:
+            df_filtered = st.session_state.df_summary_raw.copy()
             current_center = st.session_state.get("center_filter", "全部中心")
             current_depts = st.session_state.get("dept_filter", [])
             name_query = st.session_state.get("name_filter", "").strip()
@@ -1007,13 +1122,11 @@ with st.sidebar:
             if current_center != "全部中心":
                 df_filtered = df_filtered[df_filtered["所属中心"] == current_center]
             if current_depts:
-                # 对部门列进行多部门匹配
                 mask = df_filtered["部门"].apply(
                     lambda x: any(dept.strip() in current_depts for dept in str(x).split('|'))
                 )
                 df_filtered = df_filtered[mask]
             if name_query:
-                # 姓名模糊匹配
                 if "用户名称" in df_filtered.columns:
                     name_col = "用户名称"
                 elif "姓名" in df_filtered.columns:
@@ -1042,79 +1155,151 @@ with st.sidebar:
         st.markdown("---")
         st.caption("加载数据后显示统计信息")
 
-# ==================== 获取数据（手动） ====================
-if fetch_btn:
-    start_str = start_date.strftime(DATE_FORMAT)
-    end_str = end_date.strftime(DATE_FORMAT)
-    month_str = start_date.strftime("%Y%m")
-
+# ==================== 处理待重新加载请求 ====================
+if st.session_state.get("pending_reload", False) and st.session_state.get("loading", False):
+    st.session_state.pending_reload = False
     with st.spinner("🌞 考勤数据正在飞奔而来... 请稍候"):
-        raw_records = fetch_all_records(start_str, end_str, st.session_state.user_ids)
+        try:
+            start_str = start_date.strftime(DATE_FORMAT)
+            end_str = end_date.strftime(DATE_FORMAT)
+            raw_records = fetch_all_records(start_str, end_str, st.session_state.user_ids)
 
-    if not raw_records:
-        st.warning("未获取到任何数据，请检查参数或网络")
-        st.stop()
+            if not raw_records:
+                st.warning("未获取到任何数据，请检查参数或网络")
+                st.session_state.loading = False
+                st.stop()
 
-    addr_df = st.session_state.address_book_df
-    user_to_center = dict(zip(addr_df["用户ID"], addr_df["所属中心"]))
-    for r in raw_records:
-        r["所属中心"] = user_to_center.get(r["用户ID"], "")
+            addr_df = st.session_state.address_book_df
+            user_to_center = dict(zip(addr_df["用户ID"], addr_df["所属中心"]))
+            for r in raw_records:
+                r["所属中心"] = user_to_center.get(r["用户ID"], "")
 
-    daily_raw = generate_daily_report(raw_records)
-    monthly_raw = generate_monthly_report(raw_records, month_str)
-    detail_raw = sorted(raw_records, key=lambda x: (
-        x["部门"],
-        x["姓名"],
-        -int(x["日期"].replace("-", "")) if x["日期"] != "-" else 0
-    ))
+            # 生成总报表
+            summary_report = generate_summary_report(raw_records)
+            st.session_state.df_summary_raw = pd.DataFrame(summary_report)
 
-    st.session_state.df_daily_raw = pd.DataFrame(daily_raw)
-    st.session_state.df_monthly_raw = pd.DataFrame(monthly_raw)
-    st.session_state.df_detail_raw = pd.DataFrame(detail_raw)
-    st.session_state.raw_records = raw_records
-    st.session_state.data_loaded = True
+            # 生成整个周期的日报表
+            daily_raw = generate_daily_report(raw_records)
+            st.session_state.df_daily_raw = pd.DataFrame(daily_raw)
 
+            # 生成明细数据（整个周期）
+            detail_raw = sorted(raw_records, key=lambda x: (
+                x["部门"],
+                x["姓名"],
+                -int(x["日期"].replace("-", "")) if x["日期"] != "-" else 0
+            ))
+            st.session_state.df_detail_raw = pd.DataFrame(detail_raw)
+
+            # 提取所有月份
+            months = sorted(set(r["月份"] for r in raw_records if r["月份"]))
+            st.session_state.month_list = months
+
+            # 生成每个月的月报表
+            monthly_data = {}
+            for month in months:
+                monthly_report = generate_monthly_report_by_month(raw_records, month)
+                monthly_data[month] = pd.DataFrame(monthly_report)
+            st.session_state.monthly_data = monthly_data
+
+            # 生成按月份的日报表和明细表
+            daily_by_month = {}
+            detail_by_month = {}
+            for month in months:
+                month_records = [r for r in raw_records if r["月份"] == month]
+                daily_by_month[month] = pd.DataFrame(generate_daily_report(month_records))
+                detail_by_month[month] = pd.DataFrame(sorted(month_records, key=lambda x: (
+                    x["部门"],
+                    x["姓名"],
+                    -int(x["日期"].replace("-", "")) if x["日期"] != "-" else 0
+                )))
+            st.session_state.df_daily_by_month = daily_by_month
+            st.session_state.df_detail_by_month = detail_by_month
+
+            st.session_state.raw_records = raw_records
+            st.session_state.data_loaded = True
+        finally:
+            st.session_state.loading = False
+            # 不再自动修改部门筛选器，完全由用户选择决定
+            st.rerun()
+
+# ==================== 获取数据（手动） ====================
+if fetch_btn and not st.session_state.loading:
+    st.session_state.loading = True
+    st.session_state.pending_reload = True
+    # 重置筛选条件
+    st.session_state.center_filter = "全部中心"
+    st.session_state.dept_filter = []
+    st.session_state.name_filter = ""
     st.rerun()
 
 # ==================== 自动加载数据（首次进入） ====================
-if not st.session_state.data_loaded and not st.session_state.auto_load_attempted:
+if not st.session_state.data_loaded and not st.session_state.auto_load_attempted and not st.session_state.loading:
     st.session_state.auto_load_attempted = True
-    start_str = start_date.strftime(DATE_FORMAT)
-    end_str = end_date.strftime(DATE_FORMAT)
-    month_str = start_date.strftime("%Y%m")
-
+    st.session_state.loading = True
     with st.spinner("🌞 考勤数据正在飞奔而来... 请稍候"):
-        raw_records = fetch_all_records(start_str, end_str, st.session_state.user_ids)
+        try:
+            start_str = start_date.strftime(DATE_FORMAT)
+            end_str = end_date.strftime(DATE_FORMAT)
+            raw_records = fetch_all_records(start_str, end_str, st.session_state.user_ids)
 
-    if raw_records:
-        addr_df = st.session_state.address_book_df
-        user_to_center = dict(zip(addr_df["用户ID"], addr_df["所属中心"]))
-        for r in raw_records:
-            r["所属中心"] = user_to_center.get(r["用户ID"], "")
+            if raw_records:
+                addr_df = st.session_state.address_book_df
+                user_to_center = dict(zip(addr_df["用户ID"], addr_df["所属中心"]))
+                for r in raw_records:
+                    r["所属中心"] = user_to_center.get(r["用户ID"], "")
 
-        daily_raw = generate_daily_report(raw_records)
-        monthly_raw = generate_monthly_report(raw_records, month_str)
-        detail_raw = sorted(raw_records, key=lambda x: (
-            x["部门"],
-            x["姓名"],
-            -int(x["日期"].replace("-", "")) if x["日期"] != "-" else 0
-        ))
+                summary_report = generate_summary_report(raw_records)
+                st.session_state.df_summary_raw = pd.DataFrame(summary_report)
 
-        st.session_state.df_daily_raw = pd.DataFrame(daily_raw)
-        st.session_state.df_monthly_raw = pd.DataFrame(monthly_raw)
-        st.session_state.df_detail_raw = pd.DataFrame(detail_raw)
-        st.session_state.raw_records = raw_records
-        st.session_state.data_loaded = True
+                daily_raw = generate_daily_report(raw_records)
+                st.session_state.df_daily_raw = pd.DataFrame(daily_raw)
 
-        st.rerun()
-    else:
-        st.warning("自动加载数据失败，请稍后手动点击获取数据")
+                detail_raw = sorted(raw_records, key=lambda x: (
+                    x["部门"],
+                    x["姓名"],
+                    -int(x["日期"].replace("-", "")) if x["日期"] != "-" else 0
+                ))
+                st.session_state.df_detail_raw = pd.DataFrame(detail_raw)
+
+                months = sorted(set(r["月份"] for r in raw_records if r["月份"]))
+                st.session_state.month_list = months
+
+                monthly_data = {}
+                for month in months:
+                    monthly_report = generate_monthly_report_by_month(raw_records, month)
+                    monthly_data[month] = pd.DataFrame(monthly_report)
+                st.session_state.monthly_data = monthly_data
+
+                daily_by_month = {}
+                detail_by_month = {}
+                for month in months:
+                    month_records = [r for r in raw_records if r["月份"] == month]
+                    daily_by_month[month] = pd.DataFrame(generate_daily_report(month_records))
+                    detail_by_month[month] = pd.DataFrame(sorted(month_records, key=lambda x: (
+                        x["部门"],
+                        x["姓名"],
+                        -int(x["日期"].replace("-", "")) if x["日期"] != "-" else 0
+                    )))
+                st.session_state.df_daily_by_month = daily_by_month
+                st.session_state.df_detail_by_month = detail_by_month
+
+                st.session_state.raw_records = raw_records
+                st.session_state.data_loaded = True
+            else:
+                st.warning("自动加载数据失败，请稍后手动点击获取数据")
+        finally:
+            st.session_state.loading = False
+            # 首次加载也重置筛选条件为默认
+            st.session_state.center_filter = "全部中心"
+            st.session_state.dept_filter = []
+            st.session_state.name_filter = ""
+            st.rerun()
 
 # ==================== 主内容区 ====================
 if st.session_state.data_loaded:
     addr_df = st.session_state.address_book_df
 
-    # ===== 筛选控件（三列布局，增加姓名搜索） =====
+    # ===== 筛选控件 =====
     with st.container():
         st.markdown('<div class="filter-container">', unsafe_allow_html=True)
         col_center, col_dept, col_name = st.columns([1, 1.5, 0.8])
@@ -1122,30 +1307,21 @@ if st.session_state.data_loaded:
             centers = sorted(addr_df["所属中心"].unique())
             center_options = ["全部中心"] + centers
 
-            def reset_dept_filter():
-                center = st.session_state.center_filter
-                if center == "全部中心":
-                    st.session_state.dept_filter = []
-                else:
-                    dept_opts = sorted(addr_df[addr_df["所属中心"] == center]["部门"].unique())
-                    st.session_state.dept_filter = dept_opts
-
             selected_center = st.selectbox(
                 "🏢 选择所属中心",
                 center_options,
-                key="center_filter",
-                on_change=reset_dept_filter
+                key="center_filter"
             )
         with col_dept:
             if selected_center == "全部中心":
                 dept_options = sorted(addr_df["部门"].unique())
                 disabled = True
+                # 当中心为全部时，部门选择禁用，且值应清空（因为无法选择）
                 st.session_state.dept_filter = []
             else:
                 dept_options = sorted(addr_df[addr_df["所属中心"] == selected_center]["部门"].unique())
                 disabled = False
-                if not st.session_state.get("dept_filter"):
-                    st.session_state.dept_filter = dept_options
+                # 不手动干预 dept_filter，让 multiselect 的 key 管理
             selected_depts = st.multiselect(
                 "🏷️ 选择部门",
                 dept_options,
@@ -1166,8 +1342,10 @@ if st.session_state.data_loaded:
     current_depts = selected_depts
     name_query = st.session_state.get("name_filter", "").strip()
 
-    # 过滤函数（支持多部门匹配 + 姓名模糊）
+    # 过滤函数
     def filter_df(df, center_col="所属中心", dept_col="部门"):
+        if df is None or df.empty:
+            return df
         filtered = df.copy()
         if current_center != "全部中心":
             filtered = filtered[filtered[center_col] == current_center]
@@ -1190,35 +1368,37 @@ if st.session_state.data_loaded:
     # 计算工作日（用于指标卡片）
     workdays = count_workdays(st.session_state.start_date, st.session_state.end_date)
 
-    # 过滤后的各报表
-    df_daily = filter_df(st.session_state.df_daily_raw)
-    df_monthly = filter_df(st.session_state.df_monthly_raw)
-    df_detail = filter_df(st.session_state.df_detail_raw)
+    # 原始总报表（用于固定指标）
+    df_raw = st.session_state.df_summary_raw
+    # 过滤后的总报表（用于TOP3和选中中心指标）
+    df_summary_filtered = filter_df(df_raw)
 
-    # 计算加班TOP3（基于当前筛选后的月报表）
-    if not df_monthly.empty:
-        top3_list = df_monthly.nlargest(3, '总加班时间(小时)')[['用户名称', '总加班时间(小时)']].values.tolist()
+    # 计算加班TOP3（基于过滤后的总报表）
+    if df_summary_filtered is not None and not df_summary_filtered.empty:
+        top3_list = df_summary_filtered.nlargest(3, '总加班时间(小时)')[['用户名称', '总加班时间(小时)']].values.tolist()
     else:
         top3_list = []
 
     # --- 全局统计（加班指标） ---
-    df_month_raw = st.session_state.df_monthly_raw
-    if df_month_raw is not None and not df_month_raw.empty:
-        avg_all = df_month_raw["总加班时间(小时)"].mean()
-        df_rd = df_month_raw[df_month_raw["所属中心"] == "产研中心"]
-        avg_rd = df_rd["总加班时间(小时)"].mean() if not df_rd.empty else 0.0
+    # 基于原始总报表计算全公司和产研中心指标（不受筛选影响）
+    if df_raw is not None and not df_raw.empty:
+        avg_all = df_raw["总加班时间(小时)"].mean()
+        df_raw_rd = df_raw[df_raw["所属中心"] == "产研中心"]
+        avg_rd = df_raw_rd["总加班时间(小时)"].mean() if not df_raw_rd.empty else 0.0
 
         show_selected_center = current_center != "全部中心" and current_center != "产研中心"
-        if show_selected_center:
-            df_selected = df_month_raw[df_month_raw["所属中心"] == current_center]
+        if show_selected_center and df_summary_filtered is not None and not df_summary_filtered.empty:
+            df_selected = df_summary_filtered[df_summary_filtered["所属中心"] == current_center]
             avg_selected = df_selected["总加班时间(小时)"].mean() if not df_selected.empty else 0.0
         else:
             avg_selected = None
 
         daily_avg_all = avg_all / workdays if workdays > 0 else 0.0
         daily_avg_rd = avg_rd / workdays if workdays > 0 else 0.0
-        if show_selected_center:
+        if show_selected_center and avg_selected is not None:
             daily_avg_selected = avg_selected / workdays if workdays > 0 else 0.0
+        else:
+            daily_avg_selected = None
     else:
         avg_all = avg_rd = daily_avg_all = daily_avg_rd = 0.0
         show_selected_center = False
@@ -1228,7 +1408,7 @@ if st.session_state.data_loaded:
     def metric_card(label, value, unit="小时", color=None, warning=False, blue=False):
         color_class = "metric-value-red" if color == "red" else ("metric-value-blue" if blue else "")
         warning_class = " metric-warning" if warning else ""
-        unit_display = f"<span style='font-size: 16px; font-weight: 400; color: #6c757d; margin-left: 4px;'>{unit}</span>" if unit else ""
+        unit_display = f"<span style='font-size: 16px; font-weight: 400; color: var(--text-secondary); margin-left: 4px;'>{unit}</span>" if unit else ""
         return f"""
         <div class="metric-card{warning_class}">
             <div class="metric-label">{label}</div>
@@ -1242,9 +1422,9 @@ if st.session_state.data_loaded:
         if top3_data and len(top3_data) > 0:
             for i, (name, hours) in enumerate(top3_data, 1):
                 medal = "🥇" if i == 1 else ("🥈" if i == 2 else "🥉")
-                top3_html += f'<div style="display: flex; justify-content: space-between; align-items: baseline; font-size: 16px; margin-bottom: 10px;"><span>{medal} {name}</span><span class="metric-value-blue" style="font-size: 18px;">{hours:.1f} 小时</span></div>'
+                top3_html += f'<div style="display: flex; justify-content: space-between; align-items: baseline; font-size: 16px; margin-bottom: 10px;"><span style="color: var(--text-primary);">{medal} {name}</span><span style="color: var(--color-blue); font-weight: 600; font-size: 18px;">{hours:.1f} 小时</span></div>'
         else:
-            top3_html += '<div style="color: var(--text-secondary); font-size: 16px;">暂无数据</div>'
+            top3_html += f'<div style="color: var(--text-secondary); font-size: 16px;">暂无数据</div>'
         top3_html += '</div>'
         return top3_html
 
@@ -1281,25 +1461,148 @@ if st.session_state.data_loaded:
             st.markdown(metric_card(f"🏷️ {current_center}人均日均加班", daily_avg_selected, unit="小时/日"),
                         unsafe_allow_html=True)
 
-    # 标签页
-    tab1, tab2, tab3 = st.tabs(["📅 月报表", "📆 日报表", "📋 明细数据"])
+    # 判断是否跨月
+    is_cross_month = len(st.session_state.month_list) > 1
 
-    # ---------- 月报表（保留排序功能） ----------
-    with tab1:
-        # 排序 radio
-        st.markdown('<div class="sort-buttons">', unsafe_allow_html=True)
-        st.radio(
-            "排序",
-            options=["加班倒序", "请假倒序"],
-            horizontal=True,
-            key="sort_monthly",
-            label_visibility="collapsed"
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
+    # 根据是否跨月动态构建标签页列表
+    if is_cross_month:
+        tab_titles = ["📊 总报表", "📅 月报表", "📆 日报表", "📋 明细数据"]
+        tabs = st.tabs(tab_titles)
+        tab_summary, tab_monthly, tab_daily, tab_detail = tabs
+    else:
+        tab_titles = ["📅 月报表", "📆 日报表", "📋 明细数据"]
+        tabs = st.tabs(tab_titles)
+        tab_monthly, tab_daily, tab_detail = tabs
+
+    # ---------- 总报表（仅跨月时显示） ----------
+    if is_cross_month:
+        with tab_summary:
+            # 排序下拉框（固定 key）
+            sort_option = st.selectbox(
+                "排序",
+                options=["加班倒序", "请假倒序"],
+                key="sort_summary",
+                label_visibility="collapsed"
+            )
+
+            # 根据排序状态排序
+            df_display = df_summary_filtered.copy()
+            if sort_option == "加班倒序":
+                df_display = df_display.sort_values(by="总加班时间(小时)", ascending=False)
+            else:
+                df_display = df_display.sort_values(by="总请假时长(小时)", ascending=False)
+
+            if not df_display.empty:
+                df_display.insert(0, '序号', range(1, len(df_display) + 1))
+
+            # 分页切片
+            total_rows = len(df_display)
+            start_idx = (st.session_state.page_summary - 1) * st.session_state.page_size_summary
+            end_idx = min(start_idx + st.session_state.page_size_summary, total_rows)
+            df_page = df_display.iloc[start_idx:end_idx] if total_rows > 0 else df_display
+
+            column_config = {
+                "序号": st.column_config.NumberColumn(width=80),
+                "用户名称": st.column_config.TextColumn(width=150),
+                "部门": st.column_config.TextColumn(width=150),
+                "所属中心": st.column_config.TextColumn(width=150),
+                "总应出勤时长(小时)": st.column_config.NumberColumn(width=120, format="%.2f"),
+                "总实际出勤(小时)": st.column_config.NumberColumn(width=120, format="%.2f"),
+                "总班内工作时长(小时)": st.column_config.NumberColumn(width=120, format="%.2f"),
+                "总加班时间(小时)": st.column_config.NumberColumn(width=120, format="%.2f"),
+                "总请假时长(小时)": st.column_config.NumberColumn(width=120, format="%.2f"),
+                "用户ID": st.column_config.TextColumn(width=100)
+            }
+            st.dataframe(df_page, column_config=column_config, use_container_width=True, hide_index=True)
+
+            # 分页控件
+            total_pages = (total_rows - 1) // st.session_state.page_size_summary + 1 if total_rows > 0 else 1
+            if st.session_state.page_summary > total_pages:
+                st.session_state.page_summary = total_pages
+            if st.session_state.page_summary < 1:
+                st.session_state.page_summary = 1
+
+            col_left, col_right = st.columns([1, 2])
+            with col_left:
+                left_inner_cols = st.columns([1, 1])
+                with left_inner_cols[0]:
+                    st.markdown(f"**共 {len(df_summary_filtered)} 条记录**")
+                with left_inner_cols[1]:
+                    page_size_options = [10, 20, 50, 100]
+                    selected_size = st.selectbox(
+                        "每页行数",
+                        options=page_size_options,
+                        index=page_size_options.index(st.session_state.page_size_summary),
+                        key="page_size_summary_select",
+                        label_visibility="collapsed"
+                    )
+                    if selected_size != st.session_state.page_size_summary:
+                        st.session_state.page_size_summary = selected_size
+                        st.session_state.page_summary = 1
+                        st.rerun()
+
+            with col_right:
+                pagination_cols = st.columns([1, 1, 1, 1, 1])
+                with pagination_cols[0]:
+                    if st.button("⏮️ 首页", disabled=(st.session_state.page_summary == 1), key="first_summary"):
+                        st.session_state.page_summary = 1
+                        st.rerun()
+                with pagination_cols[1]:
+                    if st.button("← 上一页", disabled=(st.session_state.page_summary == 1), key="prev_summary"):
+                        st.session_state.page_summary -= 1
+                        st.rerun()
+                with pagination_cols[2]:
+                    st.markdown(
+                        f"<div style='text-align: center; font-weight: 600;'>{st.session_state.page_summary} / {total_pages}</div>",
+                        unsafe_allow_html=True)
+                with pagination_cols[3]:
+                    if st.button("下一页 →", disabled=(st.session_state.page_summary == total_pages), key="next_summary"):
+                        st.session_state.page_summary += 1
+                        st.rerun()
+                with pagination_cols[4]:
+                    if st.button("⏭️ 末页", disabled=(st.session_state.page_summary == total_pages), key="last_summary"):
+                        st.session_state.page_summary = total_pages
+                        st.rerun()
+
+    # ---------- 月报表 ----------
+    with tab_monthly:
+        if is_cross_month:
+            months = st.session_state.month_list
+            if "selected_month" not in st.session_state or st.session_state.selected_month not in months:
+                st.session_state.selected_month = months[0]
+
+            col_month, col_sort = st.columns([1, 2])
+            with col_month:
+                selected_month = st.selectbox(
+                    "选择月份",
+                    options=months,
+                    key="selected_month",
+                    label_visibility="collapsed"
+                )
+            with col_sort:
+                st.selectbox(
+                    "排序",
+                    options=["加班倒序", "请假倒序"],
+                    key="sort_monthly",
+                    label_visibility="collapsed"
+                )
+            sort_option = st.session_state.sort_monthly
+            df_monthly_raw = st.session_state.monthly_data.get(selected_month, pd.DataFrame())
+            df_monthly = filter_df(df_monthly_raw)
+        else:
+            st.selectbox(
+                "排序",
+                options=["加班倒序", "请假倒序"],
+                key="sort_monthly",
+                label_visibility="collapsed"
+            )
+            sort_option = st.session_state.sort_monthly
+            df_monthly_raw = next(iter(st.session_state.monthly_data.values()))
+            df_monthly = filter_df(df_monthly_raw)
 
         # 根据排序状态排序
         df_display = df_monthly.copy()
-        if st.session_state.sort_monthly == "加班倒序":
+        if sort_option == "加班倒序":
             df_display = df_display.sort_values(by="总加班时间(小时)", ascending=False)
         else:
             df_display = df_display.sort_values(by="总请假时长(小时)", ascending=False)
@@ -1307,7 +1610,6 @@ if st.session_state.data_loaded:
         if not df_display.empty:
             df_display.insert(0, '序号', range(1, len(df_display) + 1))
 
-        # 分页切片
         total_rows = len(df_display)
         start_idx = (st.session_state.page_monthly - 1) * st.session_state.page_size_monthly
         end_idx = min(start_idx + st.session_state.page_size_monthly, total_rows)
@@ -1319,16 +1621,15 @@ if st.session_state.data_loaded:
             "部门": st.column_config.TextColumn(width=150),
             "所属中心": st.column_config.TextColumn(width=150),
             "月份": st.column_config.TextColumn(width=80),
-            "总应出勤时长(小时)": st.column_config.NumberColumn(width=100, format="%.2f"),
-            "总实际出勤(小时)": st.column_config.NumberColumn(width=100, format="%.2f"),
-            "总班内工作时长(小时)": st.column_config.NumberColumn(width=100, format="%.2f"),
-            "总加班时间(小时)": st.column_config.NumberColumn(width=100, format="%.2f"),
-            "总请假时长(小时)": st.column_config.NumberColumn(width=100, format="%.2f"),
-            "用户ID": st.column_config.TextColumn(width=100)  # 用户ID放在最后
+            "总应出勤时长(小时)": st.column_config.NumberColumn(width=120, format="%.2f"),
+            "总实际出勤(小时)": st.column_config.NumberColumn(width=120, format="%.2f"),
+            "总班内工作时长(小时)": st.column_config.NumberColumn(width=120, format="%.2f"),
+            "总加班时间(小时)": st.column_config.NumberColumn(width=120, format="%.2f"),
+            "总请假时长(小时)": st.column_config.NumberColumn(width=120, format="%.2f"),
+            "用户ID": st.column_config.TextColumn(width=100)
         }
         st.dataframe(df_page, column_config=column_config, use_container_width=True, hide_index=True)
 
-        # 分页控件
         total_pages = (total_rows - 1) // st.session_state.page_size_monthly + 1 if total_rows > 0 else 1
         if st.session_state.page_monthly > total_pages:
             st.session_state.page_monthly = total_pages
@@ -1377,10 +1678,24 @@ if st.session_state.data_loaded:
                     st.session_state.page_monthly = total_pages
                     st.rerun()
 
-    # ---------- 日报表（固定排序：部门正序-姓名正序-日期倒序） ----------
-    with tab2:
-        # 直接使用已按部门-姓名-日期倒序排序的 df_daily
-        df_display = df_daily.copy()
+    # ---------- 日报表 ----------
+    with tab_daily:
+        if is_cross_month:
+            months = st.session_state.month_list
+            if "selected_daily_month" not in st.session_state or st.session_state.selected_daily_month not in months:
+                st.session_state.selected_daily_month = months[0]
+            selected_daily_month = st.selectbox(
+                "选择月份",
+                options=months,
+                key="selected_daily_month",
+                label_visibility="collapsed"
+            )
+            df_daily_raw = st.session_state.df_daily_by_month.get(selected_daily_month, pd.DataFrame())
+            df_daily_filtered = filter_df(df_daily_raw)
+        else:
+            df_daily_filtered = filter_df(st.session_state.df_daily_raw)
+
+        df_display = df_daily_filtered.copy()
         if not df_display.empty:
             df_display.insert(0, '序号', range(1, len(df_display) + 1))
 
@@ -1400,7 +1715,7 @@ if st.session_state.data_loaded:
             "班内工作时长(小时)": st.column_config.NumberColumn(width=100, format="%.2f"),
             "加班时间(小时)": st.column_config.NumberColumn(width=100, format="%.2f"),
             "请假时长(小时)": st.column_config.NumberColumn(width=100, format="%.2f"),
-            "用户ID": st.column_config.TextColumn(width=100)  # 用户ID放在最后
+            "用户ID": st.column_config.TextColumn(width=100)
         }
         st.dataframe(df_page, column_config=column_config, use_container_width=True, hide_index=True)
 
@@ -1414,7 +1729,7 @@ if st.session_state.data_loaded:
         with col_left:
             left_inner_cols = st.columns([1, 1])
             with left_inner_cols[0]:
-                st.markdown(f"**共 {len(df_daily)} 条记录**")
+                st.markdown(f"**共 {len(df_daily_filtered)} 条记录**")
             with left_inner_cols[1]:
                 page_size_options = [10, 20, 50, 100]
                 selected_size = st.selectbox(
@@ -1452,13 +1767,27 @@ if st.session_state.data_loaded:
                     st.session_state.page_daily = total_pages
                     st.rerun()
 
-    # ---------- 明细数据（固定排序：部门正序-姓名正序-日期倒序） ----------
-    with tab3:
-        df_display = df_detail.copy()
-        # 将“请假时长”列中的字符串转换为数值（不影响排序，仅用于显示）
-        df_display['请假时长'] = pd.to_numeric(df_display['请假时长'], errors='coerce').fillna(0)
+    # ---------- 明细数据 ----------
+    with tab_detail:
+        if is_cross_month:
+            months = st.session_state.month_list
+            if "selected_detail_month" not in st.session_state or st.session_state.selected_detail_month not in months:
+                st.session_state.selected_detail_month = months[0]
+            selected_detail_month = st.selectbox(
+                "选择月份",
+                options=months,
+                key="selected_detail_month",
+                label_visibility="collapsed"
+            )
+            df_detail_raw = st.session_state.df_detail_by_month.get(selected_detail_month, pd.DataFrame())
+            df_detail_filtered = filter_df(df_detail_raw)
+        else:
+            df_detail_filtered = filter_df(st.session_state.df_detail_raw)
 
-        # 明细数据已按部门-姓名-日期倒序排序，直接使用
+        df_display = df_detail_filtered.copy()
+        if not df_display.empty and '请假时长' in df_display.columns:
+            df_display['请假时长'] = pd.to_numeric(df_display['请假时长'], errors='coerce').fillna(0)
+
         if not df_display.empty:
             df_display.insert(0, '序号', range(1, len(df_display) + 1))
 
@@ -1484,7 +1813,7 @@ if st.session_state.data_loaded:
             "上午打卡结果": st.column_config.TextColumn(width=100),
             "下午打卡结果": st.column_config.TextColumn(width=100),
             "考勤组": st.column_config.TextColumn(width=120),
-            "用户ID": st.column_config.TextColumn(width=100)  # 用户ID已在最后
+            "用户ID": st.column_config.TextColumn(width=100)
         }
         st.dataframe(df_page, column_config=column_config, use_container_width=True, hide_index=True)
 
@@ -1498,7 +1827,7 @@ if st.session_state.data_loaded:
         with col_left:
             left_inner_cols = st.columns([1, 1])
             with left_inner_cols[0]:
-                st.markdown(f"**共 {len(df_detail)} 条记录**")
+                st.markdown(f"**共 {len(df_detail_filtered)} 条记录**")
             with left_inner_cols[1]:
                 page_size_options = [10, 20, 50, 100]
                 selected_size = st.selectbox(
@@ -1537,4 +1866,5 @@ if st.session_state.data_loaded:
                     st.rerun()
 
 else:
+    # 如果未加载数据，显示提示
     st.info("🌞 打工人，考勤数据正在飞奔而来... 请稍候或点击「获取数据」")
