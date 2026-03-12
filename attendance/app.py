@@ -7,6 +7,7 @@ import time
 import io
 import sys
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- 配置区域 ---
 APP_ID = os.getenv("APP_ID")
