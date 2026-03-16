@@ -8,7 +8,6 @@ import io
 import sys
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from streamlit_cookies_controller import CookieController
 
 # --- 配置区域 ---
 APP_ID = os.getenv("APP_ID")
@@ -634,24 +633,7 @@ def count_workdays(start_date, end_date):
 
 # ==================== Streamlit 界面 ====================
 st.set_page_config(page_title="考勤报表系统", layout="wide")
-# 初始化 Cookie 控制器
-cookie_controller = CookieController()
-# 获取现有的 _streamlit_xsrf 值
-xsrf_value = cookie_controller.get('_streamlit_xsrf')
-# 如果存在，重新设置 SameSite=None 和 Secure
-if xsrf_value:
-    cookie_controller.set(
-        '_streamlit_xsrf',
-        xsrf_value,
-        samesite='None',   # 必须为字符串 'None'
-        secure=True,        # 必须为 True
-        path='/'            # 保持与原路径一致
-    )
-else:
-    # 如果首次访问时 Cookie 尚未生成，可以等待下一次请求或主动生成一个随机值
-    # 但通常 Streamlit 会在后续响应中设置，此脚本会在每次页面加载时执行，
-    # 所以后续加载时就能读取到并覆盖。
-    pass
+
 st.markdown("""
 <style>
     /* ========== 全局变量 ========== */
